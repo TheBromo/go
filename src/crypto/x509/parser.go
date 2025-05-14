@@ -541,16 +541,17 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 		return false, errors.New("x509: empty name constraints extension")
 	}
 
-	getValues := func(subtrees cryptobyte.String) (dnsNames []string, ips []*net.IPNet, emails, uriDomains []string, err error) {
+	getValues := func(subtrees cryptobyte.String) (dirNames []pkix.RDNSequence, dnsNames []string, ips []*net.IPNet, emails, uriDomains []string, err error) {
 		for !subtrees.Empty() {
 			var seq, value cryptobyte.String
 			var tag cryptobyte_asn1.Tag
 			if !subtrees.ReadASN1(&seq, cryptobyte_asn1.SEQUENCE) ||
 				!seq.ReadAnyASN1(&value, &tag) {
-				return nil, nil, nil, nil, fmt.Errorf("x509: invalid NameConstraints extension")
+				return nil, nil, nil, nil, nil, fmt.Errorf("x509: invalid NameConstraints extension")
 			}
 
 			var (
+				dirNameTag = cryptobyte_asn1.Tag(4).ContextSpecific().Constructed()
 				dnsTag   = cryptobyte_asn1.Tag(2).ContextSpecific()
 				emailTag = cryptobyte_asn1.Tag(1).ContextSpecific()
 				ipTag    = cryptobyte_asn1.Tag(7).ContextSpecific()
@@ -558,10 +559,21 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 			)
 
 			switch tag {
+			case dirNameTag:
+
+				var dirName pkix.RDNSequence
+
+				if rest, err := asn1.Unmarshal(value, &dirName); err != nil {
+					return nil, nil, nil, nil, nil, err
+				} else if len(rest) != 0 {
+					return nil, nil, nil, nil, nil, errors.New("x509: trailing data after dirname constraint")
+				}
+
+				dirNames = append(dirNames, dirName)
 			case dnsTag:
 				domain := string(value)
 				if err := isIA5String(domain); err != nil {
-					return nil, nil, nil, nil, errors.New("x509: invalid constraint value: " + err.Error())
+					return nil, nil, nil, nil,nil, errors.New("x509: invalid constraint value: " + err.Error())
 				}
 
 				trimmedDomain := domain
@@ -573,7 +585,7 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 					trimmedDomain = trimmedDomain[1:]
 				}
 				if _, ok := domainToReverseLabels(trimmedDomain); !ok {
-					return nil, nil, nil, nil, fmt.Errorf("x509: failed to parse dnsName constraint %q", domain)
+					return nil, nil, nil, nil, nil, fmt.Errorf("x509: failed to parse dnsName constraint %q", domain)
 				}
 				dnsNames = append(dnsNames, domain)
 
@@ -591,11 +603,11 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 					mask = value[16:]
 
 				default:
-					return nil, nil, nil, nil, fmt.Errorf("x509: IP constraint contained value of length %d", l)
+					return nil, nil, nil, nil, nil, fmt.Errorf("x509: IP constraint contained value of length %d", l)
 				}
 
 				if !isValidIPMask(mask) {
-					return nil, nil, nil, nil, fmt.Errorf("x509: IP constraint contained invalid mask %x", mask)
+					return nil, nil, nil, nil, nil, fmt.Errorf("x509: IP constraint contained invalid mask %x", mask)
 				}
 
 				ips = append(ips, &net.IPNet{IP: net.IP(ip), Mask: net.IPMask(mask)})
@@ -603,7 +615,7 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 			case emailTag:
 				constraint := string(value)
 				if err := isIA5String(constraint); err != nil {
-					return nil, nil, nil, nil, errors.New("x509: invalid constraint value: " + err.Error())
+					return nil, nil, nil, nil, nil, errors.New("x509: invalid constraint value: " + err.Error())
 				}
 
 				// If the constraint contains an @ then
@@ -619,7 +631,7 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 						domain = domain[1:]
 					}
 					if _, ok := domainToReverseLabels(domain); !ok {
-						return nil, nil, nil, nil, fmt.Errorf("x509: failed to parse rfc822Name constraint %q", constraint)
+						return nil, nil, nil, nil, nil, fmt.Errorf("x509: failed to parse rfc822Name constraint %q", constraint)
 					}
 				}
 				emails = append(emails, constraint)
@@ -627,11 +639,11 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 			case uriTag:
 				domain := string(value)
 				if err := isIA5String(domain); err != nil {
-					return nil, nil, nil, nil, errors.New("x509: invalid constraint value: " + err.Error())
+					return nil, nil, nil, nil, nil, errors.New("x509: invalid constraint value: " + err.Error())
 				}
 
 				if net.ParseIP(domain) != nil {
-					return nil, nil, nil, nil, fmt.Errorf("x509: failed to parse URI constraint %q: cannot be IP address", domain)
+					return nil, nil, nil, nil, nil, fmt.Errorf("x509: failed to parse URI constraint %q: cannot be IP address", domain)
 				}
 
 				trimmedDomain := domain
@@ -643,7 +655,7 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 					trimmedDomain = trimmedDomain[1:]
 				}
 				if _, ok := domainToReverseLabels(trimmedDomain); !ok {
-					return nil, nil, nil, nil, fmt.Errorf("x509: failed to parse URI constraint %q", domain)
+					return nil, nil, nil, nil, nil, fmt.Errorf("x509: failed to parse URI constraint %q", domain)
 				}
 				uriDomains = append(uriDomains, domain)
 
@@ -652,13 +664,13 @@ func parseNameConstraintsExtension(out *Certificate, e pkix.Extension) (unhandle
 			}
 		}
 
-		return dnsNames, ips, emails, uriDomains, nil
+		return dirNames, dnsNames, ips, emails, uriDomains, nil
 	}
 
-	if out.PermittedDNSDomains, out.PermittedIPRanges, out.PermittedEmailAddresses, out.PermittedURIDomains, err = getValues(permitted); err != nil {
+	if  out.PermittedDirNames, out.PermittedDNSDomains, out.PermittedIPRanges, out.PermittedEmailAddresses, out.PermittedURIDomains, err = getValues(permitted); err != nil {
 		return false, err
 	}
-	if out.ExcludedDNSDomains, out.ExcludedIPRanges, out.ExcludedEmailAddresses, out.ExcludedURIDomains, err = getValues(excluded); err != nil {
+	if  out.PermittedDirNames, out.ExcludedDNSDomains, out.ExcludedIPRanges, out.ExcludedEmailAddresses, out.ExcludedURIDomains, err = getValues(excluded); err != nil {
 		return false, err
 	}
 	out.PermittedDNSDomainsCritical = e.Critical
